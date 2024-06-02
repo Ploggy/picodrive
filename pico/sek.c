@@ -35,12 +35,13 @@ static int do_ack(int level)
   if (pv->pending_ints & pv->reg[1] & 0x20) {
     pv->pending_ints &= ~0x20;
     pv->status &= ~SR_F;
-    return (pv->reg[0] & pv->pending_ints & 0x10) >> 2;
+    if (pv->reg[0] & pv->pending_ints & 0x10)
+      return pv->hint_irq;
   }
   else if (pv->pending_ints & pv->reg[0] & 0x10)
     pv->pending_ints &= ~0x10;
 
-  return 0;
+  return (PicoIn.AHW & PAHW_PICO ? PicoPicoIrqAck(level) : 0);
 }
 
 /* callbacks */
@@ -221,7 +222,7 @@ PICO_INTERNAL void SekPackCpu(unsigned char *cpu, int is_sub)
     *(s16 *)(cpu+0x4e) = SekCycleCntS68k - SekCycleAimS68k;
   } else {
     *(u32 *)(cpu+0x50) = Pico.t.m68c_cnt;
-    *(u32 *)(cpu+0x4e) = Pico.t.m68c_cnt - Pico.t.m68c_aim;
+    *(s16 *)(cpu+0x4e) = Pico.t.m68c_cnt - Pico.t.m68c_aim;
   }
 }
 

@@ -38,28 +38,51 @@ static void SekExecM68k(int cyc_do)
   SekCyclesLeft = 0;
 }
 
-static void SekSyncM68k(void)
+static int SekSyncM68k(int once)
 {
   int cyc_do;
+
   pprof_start(m68k);
   pevt_log_m68k_o(EVT_RUN_START);
 
-  while ((cyc_do = Pico.t.m68c_aim - Pico.t.m68c_cnt) > 0)
-    SekExecM68k(cyc_do);
+  while ((cyc_do = Pico.t.m68c_aim - Pico.t.m68c_cnt) > 0) {
+    // the Z80 CPU is stealing some bus cycles from the 68K main CPU when 
+    // accessing the main bus. Account for these by shortening the time
+    // the 68K CPU runs.
+    int z80_buscyc = Pico.t.z80_buscycles >> (~Pico.m.scanline & 1);
+    if (z80_buscyc <= cyc_do)
+      SekExecM68k(cyc_do - z80_buscyc);
+    else
+      z80_buscyc = cyc_do;
+    Pico.t.m68c_cnt += z80_buscyc;
+    Pico.t.z80_buscycles -= z80_buscyc;
+    if (once) break;
+  }
 
   SekTrace(0);
   pevt_log_m68k_o(EVT_RUN_END);
   pprof_end(m68k);
+
+  return Pico.t.m68c_aim > Pico.t.m68c_cnt;
+}
+
+static __inline void SekAimM68k(int cyc, int mult)
+{
+  // refresh slowdown, for cart: 2 cycles every 128 - make this 1 every 64,
+  // for RAM: seems to be 0-3 every 128. Carts usually run from the cart
+  // area, but MCD games only use RAM, hence a different multiplier is needed.
+  // NB must be quite accurate, so handle fractions as well (c/f OutRunners)
+  int delay = (Pico.t.refresh_delay += cyc*mult) >> 14;
+  Pico.t.m68c_cnt += delay;
+  Pico.t.refresh_delay -= delay << 14;
+  Pico.t.m68c_aim += cyc;
 }
 
 static __inline void SekRunM68k(int cyc)
 {
-  Pico.t.m68c_aim += cyc;
-  Pico.t.m68c_cnt += cyc >> 6; // refresh slowdowns
-  cyc = Pico.t.m68c_aim - Pico.t.m68c_cnt;
-  if (cyc <= 0)
-    return;
-  SekSyncM68k();
+  // TODO 0x100 would be 2 cycles/128, moreover far too sensitive
+  SekAimM68k(cyc, 0x10c); // OutRunners, testpico, VDPFIFOTesting
+  SekSyncM68k(0);
 }
 
 static void SyncCPUs(unsigned int cycles)
@@ -82,26 +105,36 @@ static void do_hint(struct PicoVideo *pv)
   pv->pending_ints |= 0x10;
   if (pv->reg[0] & 0x10) {
     elprintf(EL_INTS, "hint: @ %06x [%u]", SekPc, SekCyclesDone());
-    if (SekIrqLevel < 4)
-      SekInterrupt(4);
+    if (SekIrqLevel < pv->hint_irq)
+      SekInterrupt(pv->hint_irq);
   }
 }
 
 static void do_timing_hacks_end(struct PicoVideo *pv)
 {
   PicoVideoFIFOSync(CYCLES_M68K_LINE);
+
+  // need rather tight Z80 sync for emulation of main bus cycle stealing
+  if (Pico.m.scanline&1)
+    if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
+      PicoSyncZ80(Pico.t.m68c_aim);
 }
 
 static void do_timing_hacks_start(struct PicoVideo *pv)
 {
-  SekCyclesBurn(PicoVideoFIFOHint()); // prolong cpu HOLD if necessary
+  int cycles = PicoVideoFIFOHint();
+
+  SekCyclesBurn(cycles); // prolong cpu HOLD if necessary
+  // XXX how to handle Z80 bus cycle stealing during DMA correctly?
+  if ((Pico.t.z80_buscycles -= cycles) < 0)
+    Pico.t.z80_buscycles = 0;
+  Pico.t.m68c_aim += Pico.m.scanline&1; // add 1 every 2 lines for 488.5 cycles
 }
 
 static int PicoFrameHints(void)
 {
   struct PicoVideo *pv = &Pico.video;
   int lines, y, lines_vis, skip;
-  int vcnt_wrap, vcnt_adj;
   int hint; // Hint counter
 
   pevt_log_m68k_o(EVT_FRAME_START);
@@ -109,7 +142,6 @@ static int PicoFrameHints(void)
   skip = PicoIn.skipFrame;
 
   Pico.t.m68c_frame_start = Pico.t.m68c_aim;
-  pv->v_counter = Pico.m.scanline = 0;
   z80_resetCycles();
   PsndStartFrame();
 
@@ -118,17 +150,13 @@ static int PicoFrameHints(void)
   // === active display ===
   pv->status |= PVS_ACTIVE;
 
-  for (y = 0; ; y++)
+  for (y = 0; y < 240; y++)
   {
-    pv->v_counter = Pico.m.scanline = y;
-    if ((pv->reg[12]&6) == 6) { // interlace mode 2
-      pv->v_counter <<= 1;
-      pv->v_counter |= pv->v_counter >> 8;
-      pv->v_counter &= 0xff;
-    }
-
-    if (y == (pv->reg[1] & 8 ? 240 : 224))
+    if (y == 224 && !(pv->reg[1] & 8))
       break;
+
+    Pico.m.scanline = y;
+    pv->v_counter = PicoVideoGetV(y, 0);
 
     PAD_DELAY();
 
@@ -140,14 +168,16 @@ static int PicoFrameHints(void)
     }
 
     // decide if we draw this line
-    if (!skip && (PicoIn.opt & POPT_ALT_RENDERER))
+    if (unlikely(PicoIn.opt & POPT_ALT_RENDERER) && !skip)
     {
       // find the right moment for frame renderer, when display is no longer blanked
       if ((pv->reg[1]&0x40) || y > 100) {
-        PicoFrameFull();
+        if (Pico.est.rendstatus & PDRAW_SYNC_NEEDED)
+          PicoFrameFull();
 #ifdef DRAW_FINISH_FUNC
         DRAW_FINISH_FUNC();
 #endif
+        Pico.est.rendstatus &= ~PDRAW_SYNC_NEEDED;
         skip = 1;
       }
     }
@@ -167,10 +197,11 @@ static int PicoFrameHints(void)
   if (!skip)
   {
     if (Pico.est.DrawScanline < y)
-      PicoDrawSync(y - 1, 0);
+      PicoVideoSync(-1);
 #ifdef DRAW_FINISH_FUNC
     DRAW_FINISH_FUNC();
 #endif
+    Pico.est.rendstatus &= ~PDRAW_SYNC_NEEDED;
   }
 #ifdef PICO_32X
   p32x_render_frame();
@@ -180,6 +211,8 @@ static int PicoFrameHints(void)
   lines_vis = (pv->reg[1] & 8) ? 240 : 224;
   if (y == lines_vis)
     pv->status &= ~PVS_ACTIVE;
+  Pico.m.scanline = y;
+  pv->v_counter = PicoVideoGetV(y, 0);
 
   memcpy(PicoIn.padInt, PicoIn.pad, sizeof(PicoIn.padInt));
   PAD_DELAY();
@@ -217,9 +250,10 @@ static int PicoFrameHints(void)
     SekInterrupt(6);
   }
 
-  if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80)) {
+  // assert Z80 interrupt for one scanline even in busrq hold (Teddy Blues)
+  if (/*Pico.m.z80Run &&*/ !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80)) {
     elprintf(EL_INTS, "zint");
-    z80_int();
+    z80_int_assert(1);
   }
 
   // Run scanline:
@@ -229,26 +263,16 @@ static int PicoFrameHints(void)
   if (PicoLineHook) PicoLineHook();
   pevt_log_m68k_o(EVT_NEXT_LINE);
 
-  // === VBLANK ===
-  if (Pico.m.pal) {
-    lines = 313;
-    vcnt_wrap = 0x103;
-    vcnt_adj = 57;
-  }
-  else {
-    lines = 262;
-    vcnt_wrap = 0xEB;
-    vcnt_adj = 6;
-  }
+  if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
+    PicoSyncZ80(Pico.t.m68c_aim);
+  z80_int_assert(0);
 
+  // === VBLANK ===
+  lines = Pico.m.pal ? 313 : 262;
   for (y++; y < lines - 1; y++)
   {
-    pv->v_counter = Pico.m.scanline = y;
-    if (y >= vcnt_wrap)
-      pv->v_counter -= vcnt_adj;
-    if ((pv->reg[12]&6) == 6)
-      pv->v_counter = (pv->v_counter << 1) | 1;
-    pv->v_counter &= 0xff;
+    Pico.m.scanline = y;
+    pv->v_counter = PicoVideoGetV(y, 1);
 
     PAD_DELAY();
 
@@ -273,7 +297,7 @@ static int PicoFrameHints(void)
     while (l-- > 0) {
       Pico.t.m68c_cnt -= CYCLES_M68K_LINE;
       do_timing_hacks_start(pv);
-      SekSyncM68k();
+      SekSyncM68k(0);
       do_timing_hacks_end(pv);
     }
   }
@@ -315,7 +339,7 @@ static int PicoFrameHints(void)
   // get samples from sound chips
   PsndGetSamples(y);
 
-  timers_cycle();
+  timers_cycle(cycles_68k_to_z80(Pico.t.m68c_aim - Pico.t.m68c_frame_start));
 
   pv->hint_cnt = hint;
 

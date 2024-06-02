@@ -54,7 +54,18 @@ endif
 include $(COMMON_DIR)/common.mak
 
 SOURCES_C := $(LIBRETRO_DIR)/libretro.c \
+             $(LIBRETRO_COMM_DIR)/formats/png/rpng.c \
+             $(LIBRETRO_COMM_DIR)/streams/trans_stream.c \
+             $(LIBRETRO_COMM_DIR)/streams/trans_stream_pipe.c \
+             $(LIBRETRO_COMM_DIR)/streams/trans_stream_zlib.c \
+             $(LIBRETRO_COMM_DIR)/file/file_path_io.c \
+             $(LIBRETRO_COMM_DIR)/file/file_path.c \
+             $(LIBRETRO_COMM_DIR)/vfs/vfs_implementation.c \
+             $(LIBRETRO_COMM_DIR)/time/rtime.c \
+             $(LIBRETRO_COMM_DIR)/string/stdstring.c \
+             $(LIBRETRO_COMM_DIR)/encodings/encoding_utf.c \
              $(LIBRETRO_COMM_DIR)/compat/compat_strcasestr.c \
+             $(LIBRETRO_COMM_DIR)/compat/compat_strl.c \
              $(COMMON_DIR)/mp3.c \
              $(COMMON_DIR)/mp3_sync.c \
              $(COMMON_DIR)/mp3_dummy.c \
@@ -70,10 +81,8 @@ SOURCES_C := $(LIBRETRO_DIR)/libretro.c \
 
 COREFLAGS := $(addprefix -D,$(DEFINES)) -fno-strict-aliasing -DUSE_LIBCHDR=1 -D_7ZIP_ST -I$(CORE_DIR)/pico/cd/libchdr/include -I$(CORE_DIR)/pico/cd/libchdr/deps/lzma-19.00/include
 
-GIT_VERSION := $(shell git rev-parse --short HEAD || echo unknown)
-ifneq ($(GIT_VERSION),"unknown")
-  COREFLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
-endif
+GIT_REVISION := -$(shell git rev-parse --short HEAD || echo unknown)
+COREFLAGS += -DREVISION=\"$(GIT_REVISION)\"
 
 ifneq ($(filter armeabi%, $(TARGET_ARCH_ABI)),)
 $(CORE_DIR)/pico/pico_int_offs.h:

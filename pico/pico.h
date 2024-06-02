@@ -82,17 +82,24 @@ extern void *p32x_bios_g, *p32x_bios_m, *p32x_bios_s;
 #define PAHW_32X    (1<<1)
 #define PAHW_SVP    (1<<2)
 #define PAHW_PICO   (1<<3)
+
 #define PAHW_SMS    (1<<4)
+#define PAHW_GG     (1<<5)
+#define PAHW_SG     (1<<6)
+#define PAHW_SC     (1<<7)
+#define PAHW_8BIT   (PAHW_SMS|PAHW_GG|PAHW_SG|PAHW_SC)
 
 #define PHWS_AUTO   0
 #define PHWS_GG     1
 #define PHWS_SMS    2
 #define PHWS_SG     3
+#define PHWS_SC     4
 
 #define PQUIRK_FORCE_6BTN       (1<<0)
 #define PQUIRK_BLACKTHORNE_HACK (1<<1)
 #define PQUIRK_WWFRAW_HACK      (1<<2)
 #define PQUIRK_MARSCHECK_HACK   (1<<3)
+#define PQUIRK_NO_Z80_BUS_LOCK  (1<<4)
 
 // the emulator is configured and some status is reported
 // through this global state (not saved in savestates)
@@ -109,6 +116,7 @@ typedef struct PicoInterface
 	unsigned short autoRgnOrder;   // packed priority list of regions, for example 0x148 means this detection order: EUR, USA, JAP
 	unsigned int hwSelect;         // hardware preselected via option menu
 	unsigned int mapper;           // mapper selection for SMS, 0 = auto
+	unsigned int tmsPalette;       // palette used by SMS in TMS graphic modes
 
 	unsigned short quirks;         // game-specific quirks: PQUIRK_*
 	unsigned short overclockM68k;  // overclock the emulated 68k, in %
@@ -142,17 +150,14 @@ void PicoGetInternal(pint_t which, pint_ret_t *ret);
 struct PicoEState;
 
 // pico.c
-#define XPCM_BUFFER_SIZE (320+160)
+#define XPCM_BUFFER_SIZE 64
 typedef struct
 {
 	int pen_pos[2];
 	int page;
-	// internal
 	int fifo_bytes;      // bytes in FIFO
-	int fifo_bytes_prev;
-	int fifo_line_bytes; // float part, << 16
-	int line_counter;
 	unsigned short r1, r12;
+	unsigned int reserved[3];
 	unsigned char xpcm_buffer[XPCM_BUFFER_SIZE+4];
 	unsigned char *xpcm_ptr;
 } picohw_state;
@@ -217,7 +222,6 @@ void vidConvCpyRGB565(void *to, void *from, int pixels);
 #endif
 void PicoDoHighPal555(int sh, int line, struct PicoEState *est);
 // internals, NB must keep in sync with ASM draw functions
-#define PDRAW_SPRITES_MOVED (1<<0) // SAT address modified
 #define PDRAW_WND_DIFF_PRIO (1<<1) // not all window tiles use same priority
 #define PDRAW_PARSE_SPRITES (1<<2) // SAT needs parsing
 #define PDRAW_INTERLACE     (1<<3)
@@ -231,6 +235,10 @@ void PicoDoHighPal555(int sh, int line, struct PicoEState *est);
 #define PDRAW_30_ROWS      (1<<11) // 30 rows mode (240 lines)
 #define PDRAW_32X_SCALE    (1<<12) // scale CLUT layer for 32X
 #define PDRAW_SMS_BLANK_1  (1<<13) // 1st column blanked
+#define PDRAW_BGC_DMA      (1<<14) // in background color DMA
+#define PDRAW_SOFTSCALE    (1<<15) // H32 upscaling
+#define PDRAW_SYNC_NEEDED  (1<<16) // redraw needed
+#define PDRAW_SYNC_NEXT    (1<<17) // redraw next frame
 extern int rendstatus_old;
 extern int rendlines;
 
@@ -260,7 +268,7 @@ void Pico32xSetClocks(int msh2_hz, int ssh2_hz);
 #define PICO_SSH2_HZ ((int)(7670442.0 * 2.4))
 
 // sound.c
-extern void (*PsndMix_32_to_16l)(s16 *dest, s32 *src, int count);
+extern void (*PsndMix_32_to_16)(s16 *dest, s32 *src, int count);
 void PsndRerate(int preserve_state);
 
 // media.c
@@ -282,9 +290,11 @@ enum cd_track_type
   CT_ISO = 1,	/* 2048 B/sector */
   CT_BIN = 2,	/* 2352 B/sector */
   // audio tracks
-  CT_MP3 = 3,
-  CT_WAV = 4,
-  CT_CHD = 5,
+  CT_AUDIO = 8,
+  CT_RAW = CT_AUDIO | 1,
+  CT_CHD = CT_AUDIO | 2,
+  CT_MP3 = CT_AUDIO | 3,
+  CT_WAV = CT_AUDIO | 4,
 };
 
 typedef struct

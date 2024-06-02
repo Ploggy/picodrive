@@ -217,15 +217,20 @@ enum { F2_ALT=0x20, F2_MULDIV=0x01 };
 #define PTR_SCALE			3
 
 // NB: must split 64 bit result into 2 32 bit registers
-// NB: expects 32 bit values in s1+s2, correctly sign extended to 64 bits
 #define EMIT_R5_MULLU_REG(dlo, dhi, s1, s2) do { \
+	EMIT(R5_LSL_IMM(AT, s1, 32)); \
+	EMIT(R5_LSL_IMM(dhi, s2, 32)); \
+	EMIT(R5_MULHU(dlo, AT, dhi)); \
+	EMIT(R5_ASR_IMM(dhi, dlo, 32)); \
+	EMIT(R5_ADDW_IMM(dlo, dlo, 0)); \
+} while (0)
+
+#define EMIT_R5_MULLS_REG(dlo, dhi, s1, s2) do { \
 	EMIT(R5_MUL(dlo, s1, s2)); \
 	EMIT(R5_ASR_IMM(dhi, dlo, 32)); \
 	EMIT(R5_ADDW_IMM(dlo, dlo, 0)); \
 } while (0)
 
-#define EMIT_R5_MULLS_REG(dlo, dhi, s1, s2) \
-	EMIT_R5_MULLU_REG(dlo, dhi, s1, s2)
 #else
 #define R5_OP32				0
 #define F1_P				F1_W
@@ -756,7 +761,7 @@ static void emith_op_imm(int f1, int rd, int rs, u32 imm)
 	if ((imm + _CB(imm,1,11,12)) >> 12) {
 		emith_move_r_imm(AT, imm);
 		EMIT(R5_R_INSN(OP_REG^op32, f1&7,_, rd, rs, AT));
-	} else if (imm + (f1 == F1_AND) || rd != rs)
+	} else if (imm || f1 == F1_AND || rd != rs)
 		EMIT(R5_I_INSN(OP_IMM^op32, f1&7, rd, rs, imm));
 }
 
@@ -1030,7 +1035,7 @@ static void emith_ld_offs(int sz, int rd, int rs, int o12)
 		EMIT(R5_I_INSN(OP_LD, sz, rd, rs, o12));
 	} else {
 		EMIT(R5_MOVT_IMM(AT, o12 + _CB(o12,1,11,12))); \
-		EMIT(R5_R_INSN(OP_REG, F1_ADD,_, AT, rs, AT)); \
+		EMIT(R5_ADD_REG(AT, rs, AT)); \
 		EMIT(R5_I_INSN(OP_LD, sz, rd, AT, o12));
 	}
 }
@@ -1110,7 +1115,7 @@ static void emith_st_offs(int sz, int rt, int rs, int o12)
 		EMIT(R5_S_INSN(OP_ST, sz, rt, rs, o12));
 	} else {
 		EMIT(R5_MOVT_IMM(AT, o12 + _CB(o12,1,11,12))); \
-		EMIT(R5_R_INSN(OP_REG, F1_ADD,_, AT, rs, AT)); \
+		EMIT(R5_ADD_REG(AT, rs, AT)); \
 		EMIT(R5_S_INSN(OP_ST, sz, rt, AT, o12));
 	}
 }

@@ -404,7 +404,9 @@ size_t pm_read(void *ptr, size_t bytes, pm_file *stream)
 {
   int ret;
 
-  if (stream->type == PMT_UNCOMPRESSED)
+  if (stream == NULL)
+    return -1;
+  else if (stream->type == PMT_UNCOMPRESSED)
   {
     ret = fread(ptr, 1, bytes, stream->file);
   }
@@ -514,8 +516,10 @@ size_t pm_read(void *ptr, size_t bytes, pm_file *stream)
 
 size_t pm_read_audio(void *ptr, size_t bytes, pm_file *stream)
 {
+  if (stream == NULL)
+    return -1;
 #if !(CPU_IS_LE)
-  if (stream->type == PMT_UNCOMPRESSED)
+  else if (stream->type == PMT_UNCOMPRESSED)
   {
     // convert little endian audio samples from WAV file
     int ret = pm_read(ptr, bytes, stream);
@@ -542,7 +546,9 @@ size_t pm_read_audio(void *ptr, size_t bytes, pm_file *stream)
 
 int pm_seek(pm_file *stream, long offset, int whence)
 {
-  if (stream->type == PMT_UNCOMPRESSED)
+  if (stream == NULL)
+    return -1;
+  else if (stream->type == PMT_UNCOMPRESSED)
   {
     fseek(stream->file, offset, whence);
     return ftell(stream->file);
@@ -707,26 +713,22 @@ static unsigned char *PicoCartAlloc(int filesize, int is_sms)
 {
   unsigned char *rom;
 
+  // make size power of 2 for easier banking handling
+  int s = 0, tmp = filesize;
+  while ((tmp >>= 1) != 0)
+    s++;
+  if (filesize > (1 << s))
+    s++;
+  rom_alloc_size = 1 << s;
+
   if (is_sms) {
-    // make size power of 2 for easier banking handling
-    int s = 0, tmp = filesize;
-    while ((tmp >>= 1) != 0)
-      s++;
-    if (filesize > (1 << s))
-      s++;
-    rom_alloc_size = 1 << s;
     // be sure we can cover all address space
     if (rom_alloc_size < 0x10000)
       rom_alloc_size = 0x10000;
   }
   else {
-    // make alloc size at least sizeof(mcd_state),
-    // in case we want to switch to CD mode
-    if (filesize < sizeof(mcd_state))
-      filesize = sizeof(mcd_state);
-
     // align to 512K for memhandlers
-    rom_alloc_size = (filesize + 0x7ffff) & ~0x7ffff;
+    rom_alloc_size = (rom_alloc_size + 0x7ffff) & ~0x7ffff;
   }
 
   if (rom_alloc_size - filesize < 4)
@@ -847,7 +849,7 @@ int PicoCartInsert(unsigned char *rom, unsigned int romsize, const char *carthw_
   }
   pdb_cleanup();
 
-  PicoIn.AHW &= PAHW_MCD|PAHW_SMS|PAHW_PICO;
+  PicoIn.AHW &= ~(PAHW_32X|PAHW_SVP);
 
   PicoCartMemSetup = NULL;
   PicoDmaHook = NULL;
@@ -866,7 +868,7 @@ int PicoCartInsert(unsigned char *rom, unsigned int romsize, const char *carthw_
     PicoInitPico();
 
   // setup correct memory map for loaded ROM
-  switch (PicoIn.AHW) {
+  switch (PicoIn.AHW & ~(PAHW_GG|PAHW_SG|PAHW_SC)) {
     default:
       elprintf(EL_STATUS|EL_ANOMALY, "starting in unknown hw configuration: %x", PicoIn.AHW);
     case 0:
@@ -906,8 +908,7 @@ void PicoCartUnload(void)
     PicoCartUnloadHook = NULL;
   }
 
-  if (PicoIn.AHW & PAHW_32X)
-    PicoUnload32x();
+  PicoUnload32x();
 
   if (Pico.rom != NULL) {
     SekFinishIdleDet();
@@ -1209,6 +1210,8 @@ static void parse_carthw(const char *carthw_cfg, int *fill_sram,
         PicoIn.quirks |= PQUIRK_MARSCHECK_HACK;
       else if (strcmp(p, "force_6btn") == 0)
         PicoIn.quirks |= PQUIRK_FORCE_6BTN;
+      else if (strcmp(p, "no_z80_bus_lock") == 0)
+        PicoIn.quirks |= PQUIRK_NO_Z80_BUS_LOCK;
       else {
         elprintf(EL_STATUS, "carthw:%d: unsupported prop: %s", line, p);
         goto bad_nomsg;
@@ -1353,7 +1356,7 @@ static void PicoCartDetect(const char *carthw_cfg)
     for (i = 0; i < Pico.romsize; i += 4) {
       unsigned v = CPU_BE2(*(u32 *) (Pico.rom + i));
       if (a && v == a + 0x400) { // patch if 2 pointers with offset 0x400 are found
-        printf("auto-patching @%06x: %08x->%08x\n", i, v, v - 0x100);
+        elprintf(EL_STATUS, "auto-patching @%06x: %08x->%08x\n", i, v, v - 0x100);
         *(u32 *) (Pico.rom + i) = CPU_BE2(v - 0x100);
       }
       // detect a pointer into the incriminating area
@@ -1374,7 +1377,7 @@ static void PicoCartDetect(const char *carthw_cfg)
     for (i = 0; i < Pico.romsize; i += 4) {
       unsigned v = CPU_BE2(*(u32 *) (Pico.rom + i));
       if (a == 0xffffff8c && v == 0x5ee1) { // patch if 4-long xfer written to CHCR
-        printf("auto-patching @%06x: %08x->%08x\n", i, v, v & ~0x800);
+        elprintf(EL_STATUS, "auto-patching @%06x: %08x->%08x\n", i, v, v & ~0x800);
         *(u32 *) (Pico.rom + i) = CPU_BE2(v & ~0x800); // change to half-sized xfer
       }
       a = v;

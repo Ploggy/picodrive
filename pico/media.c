@@ -51,7 +51,7 @@ static int detect_media(const char *fname, const unsigned char *rom, unsigned in
   }
 
   // detect wrong extensions
-  if (!strcmp(ext, "srm") || !strcmp(ext, "gz")) // s.gz ~ .mds.gz
+  if (!strcasecmp(ext, "srm") || !strcasecmp(ext, "gz")) // s.gz ~ .mds.gz
     return PM_BAD_DETECT;
 
   /* don't believe in extensions, except .cue and .chd */
@@ -138,16 +138,18 @@ static int detect_media(const char *fname, const unsigned char *rom, unsigned in
 
 extension_check:
   /* probably some headerless thing. Maybe check the extension after all. */
+  ext_ptr = pmf && *pmf->ext ? pmf->ext : ext;
+
   for (i = 0; i < ARRAY_SIZE(md_exts); i++)
-    if (strcasecmp(ext, md_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, md_exts[i]) == 0)
       goto looks_like_md;
 
   for (i = 0; i < ARRAY_SIZE(sms_exts); i++)
-    if (strcasecmp(ext, sms_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, sms_exts[i]) == 0)
       goto looks_like_sms;
 
   for (i = 0; i < ARRAY_SIZE(pico_exts); i++)
-    if (strcasecmp(ext, pico_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, pico_exts[i]) == 0)
       goto looks_like_pico;
 
   /* If everything else fails, make a guess on the reset vector */
@@ -345,12 +347,6 @@ enum media_type_e PicoLoadMedia(const char *filename,
       do_region_override(filename);
   }
 
-  if (PicoCartInsert(rom_data, rom_size, carthw_cfg_fname)) {
-    media_type = PM_ERROR;
-    goto out;
-  }
-  rom_data = NULL; // now belongs to PicoCart
-
   // simple test for GG. Do this here since m.hardware is nulled in Insert
   if ((PicoIn.AHW & PAHW_SMS) && !PicoIn.hwSelect) {
     const char *ext = NULL;
@@ -362,15 +358,24 @@ enum media_type_e PicoLoadMedia(const char *filename,
         ext = NULL;
       }
     }
-    if (ext && !strcmp(ext,"gg") && !PicoIn.hwSelect) {
-      Pico.m.hardware |= PMS_HW_GG;
+    if (ext && !strcasecmp(ext,"gg") && !PicoIn.hwSelect) {
+      PicoIn.AHW |= PAHW_GG;
       lprintf("detected GG ROM\n");
-    } else if (ext && !strcmp(ext,"sg")) {
-      Pico.m.hardware |= PMS_HW_SG;
+    } else if (ext && !strcasecmp(ext,"sg")) {
+      PicoIn.AHW |= PAHW_SG;
       lprintf("detected SG-1000 ROM\n");
+    } else if (ext && !strcasecmp(ext,"sc")) {
+      PicoIn.AHW |= PAHW_SC;
+      lprintf("detected SC-3000 ROM\n");
     } else
       lprintf("detected SMS ROM\n");
   }
+
+  if (PicoCartInsert(rom_data, rom_size, carthw_cfg_fname)) {
+    media_type = PM_ERROR;
+    goto out;
+  }
+  rom_data = NULL; // now belongs to PicoCart
 
   // insert CD if it was detected
   Pico.m.ncart_in = 0;
@@ -381,7 +386,8 @@ enum media_type_e PicoLoadMedia(const char *filename,
       media_type = PM_BAD_CD;
       goto out;
     }
-    Pico.m.ncart_in = 1;
+    if (Pico.romsize <= 0x20000)
+      Pico.m.ncart_in = 1;
   }
 
   if (PicoIn.quirks & PQUIRK_FORCE_6BTN)
@@ -391,7 +397,7 @@ out:
   if (rom_file)
     pm_close(rom_file);
   if (rom_data)
-    free(rom_data);
+    PicoCartUnload();
   return media_type;
 }
 

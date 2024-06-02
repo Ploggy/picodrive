@@ -26,10 +26,14 @@ AS ?= as
 CC_AS ?= $(CC)
 CFLAGS ?=
 
+# Include root directory
+CFLAGS += -I$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
 #libretro includes
 CFLAGS += -I platform/libretro/libretro-common/include
 CFLAGS += -I platform/libretro/libretro-common/include/compat
 CFLAGS += -I platform/libretro/libretro-common/include/encodings
+CFLAGS += -I platform/libretro/libretro-common/include/formats
 CFLAGS += -I platform/libretro/libretro-common/include/streams
 CFLAGS += -I platform/libretro/libretro-common/include/string
 CFLAGS += -I platform/libretro/libretro-common/include/vfs
@@ -40,10 +44,8 @@ STATIC_LINKING_LINK:= 0
 LOW_MEMORY := 0
 TARGET_NAME := picodrive
 LIBM := -lm
-GIT_VERSION ?= $(shell git rev-parse --short HEAD || echo unknown)
-ifneq ($(GIT_VERSION),"unknown")
-	CFLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
-endif
+GIT_REVISION ?= -$(shell git rev-parse --short HEAD || echo unknown)
+CFLAGS += -DREVISION=\"$(GIT_REVISION)\"
 
 fpic :=
 
@@ -68,7 +70,6 @@ else ifneq (,$(findstring x86,$(platform)))
 	ARCH := 86
         fpic := -fPIC
 	SHARED := -shared
-	DONT_COMPILE_IN_ZLIB = 1
 	CFLAGS += -DFAMEC_NO_GOTOS
 
 # AARCH64 generic
@@ -77,7 +78,6 @@ else ifeq ($(platform), aarch64)
 	ARCH = aarch64
         fpic := -fPIC
 	SHARED := -shared
-	DONT_COMPILE_IN_ZLIB = 1
 	CFLAGS += -DFAMEC_NO_GOTOS
 
 # Portable Linux
@@ -280,7 +280,7 @@ else ifeq ($(platform), wii)
 	TARGET := $(TARGET_NAME)_libretro_$(platform).a
 	CC = $(DEVKITPPC)/bin/powerpc-eabi-gcc$(EXE_EXT)
 	AR = $(DEVKITPPC)/bin/powerpc-eabi-ar$(EXE_EXT)
-	CFLAGS += -DGEKKO -DHW_RVL -mrvl -mcpu=750 -meabi -mhard-float
+	CFLAGS += -DGEKKO -DHW_RVL -mrvl -mcpu=750 -meabi -mhard-float -ffat-lto-objects
 	STATIC_LINKING = 1
 	STATIC_LINKING_LINK = 1
 
@@ -493,7 +493,6 @@ else ifeq ($(platform), miyoo)
 	SHARED := -shared -nostdlib
 	fpic := -fPIC
 	LIBM :=
-	DONT_COMPILE_IN_ZLIB = 1
 	CFLAGS += -fomit-frame-pointer -ffast-math -march=armv5te -mtune=arm926ej-s -D__GCW0__
 	HAVE_ARMv6 = 0
 	LOW_MEMORY = 1
@@ -605,7 +604,7 @@ else
 
 endif
 
-CFLAGS += -DNO_ZLIB -D__LIBRETRO__
+CFLAGS += -D__LIBRETRO__
 
 ifeq ($(USE_LIBRETRO_VFS),1)
 	CFLAGS += -DUSE_LIBRETRO_VFS
@@ -707,6 +706,8 @@ endif
 else
 	LD = $(CC)
 endif
+
+PLATFORM_ZLIB ?= 1
 
 include Makefile
 
